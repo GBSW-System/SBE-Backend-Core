@@ -28,16 +28,26 @@ public class RustRegistryClient {
                 .build();
 
         try {
-            // Metadata는 요청 본문과 별도로 전달하는 gRPC 헤더이다.
-            var gatewayHeaders = new Metadata();
-            gatewayHeaders.put(
+            var headers = new Metadata();
+
+            // 게이트웨이 토큰으로 Rust가 Java 서버를 확인한다.
+            headers.put(
                     Metadata.Key.of("x-sbe-gateway-token", Metadata.ASCII_STRING_MARSHALLER),
                     gatewayToken
             );
 
-            // 이 스텁으로 보내는 모든 호출에 게이트웨이 토큰을 붙인다.
+            // 사용자 세션으로 Rust가 이 서비스의 조회/수정 권한을 확인한다.
+            // 세션없이 호출하면 Rust가 UNAUTHENTICATED를 반환한다.
+            String sessionToken = System.getenv("SBE_SESSION_TOKEN");
+            if (sessionToken != null && !sessionToken.isBlank()) {
+                headers.put(
+                        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
+                        "Bearer " + sessionToken
+                );
+            }
+
             var registry = ServiceRegistryGrpc.newBlockingStub(channel)
-                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(gatewayHeaders));
+                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers));
 
             // 현재 설정을 조회한다.
             var req = GetServiceConfigurationRequest.newBuilder()
@@ -54,18 +64,6 @@ public class RustRegistryClient {
 
             // 사용자가 --update 를 붙였을 때만 변경 요청도 보낸다.
             if (args.length >= 2 && "--update".equals(args[1])) {
-                // 이 토큰은 변경 이력에 기록할 최종 사용자를 식별한다.
-                String token = System.getenv("SBE_SESSION_TOKEN");
-                if (token == null || token.isBlank()) {
-                    throw new IllegalStateException("SBE_SESSION_TOKEN을 설정하세요.");
-                }
-
-                var headers = new Metadata();
-                headers.put(
-                        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
-                        "Bearer " + token
-                );
-
                 var update = UpdateServiceConfigurationRequest.newBuilder()
                         .setServiceId(serviceId)
                         // 방금 읽은 값이 4라면 "아직 4일 때만 저장"을 의미한다.
@@ -76,7 +74,6 @@ public class RustRegistryClient {
                 // 기존 게이트웨이 인증이 붙은 스텁에 사용자 헤더를 추가한다.
                 // 수정 요청에는 조회와 별도로 새 3초 제한을 부여한다.
                 var saved = registry
-                        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
                         .withDeadlineAfter(3, TimeUnit.SECONDS)
                         .updateServiceConfiguration(update);
 

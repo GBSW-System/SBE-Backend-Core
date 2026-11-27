@@ -1,15 +1,17 @@
+use crate::database::ConfigUpdateError;
+use crate::database::ConfigurationAction;
 use crate::database::{Database, ReadQuery, ReadResult};
 use crate::registry::{
     GetServiceConfigurationRequest, GetServiceConfigurationResponse,
     service_registry_server::ServiceRegistry,
 };
-use tonic::{Request, Response, Status};
-use crate::database::ConfigUpdateError;
 use crate::registry::{
     UpdateServiceConfigurationRequest, UpdateServiceConfigurationResponse,
-    update_service_configuration_request::Change
+    update_service_configuration_request::Change,
 };
 use std::collections::HashSet;
+use tonic::metadata::MetadataMap;
+use tonic::{Request, Response, Status};
 
 // 현재 파일에 남아 있는 타입이다.
 // 사용자와 권한을 조회하므로, 이 구조체를 참조하지 않는다.
@@ -28,6 +30,44 @@ impl RegistryHandler {
     pub fn new(db: Database) -> Self {
         Self { db }
     }
+
+    async fn require_configuration_access(
+        &self,
+        metadata: &MetadataMap,
+        service_id: i64,
+        action: ConfigurationAction,
+    ) -> Result<i64, Status> {
+        // Java가 보낸 "authorization: Bearer <세션 토큰>" 에서 토큰을 꺼낸다.
+        let token = metadata
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| Status::unauthenticated("세션 토큰이 필요합니다."))?;
+
+        if service_id <= 0 {
+            return Err(Status::invalid_argument("service_id는 양수여야 합니다."));
+        }
+
+        let (user_id, allowed) = self
+            .db
+            .configuration_access(token, service_id, action)
+            .await
+            .map_err(|e| {
+                // DB 장애는 서버에 기록한다. 사용자 토큰은 로그에 넣지 않는다.
+                tracing::error!(%e, "서비스 설정 권한 조회 실패");
+                Status::internal("서비스 설정 권한을 확인할 수 없습니다.")
+            })?
+            .ok_or_else(|| Status::unauthenticated("유효한 세션이 아닙니다."))?;
+
+        if !allowed {
+            return Err(Status::permission_denied(
+                "이 서비스 설정에 대한 요청 권한이 없습니다.",
+            ));
+        }
+
+        Ok(user_id)
+    }
 }
 
 // .proto로부터 생성된 ServiceRegistry 트레이트의 메서드를 구현한다.
@@ -37,13 +77,20 @@ impl ServiceRegistry for RegistryHandler {
         &self,
         request: Request<GetServiceConfigurationRequest>,
     ) -> Result<Response<GetServiceConfigurationResponse>, Status> {
-        // inno_inner()는 gRPC 요청에서 실제 protobuf 메시지를 꺼낸다.
-        let service_id = request.into_inner().service_id;
-        if service_id <= 0 {
-            return Err(Status::invalid_argument("service_id는 양수여야 합니다."));
-        }
+        // get_ref()로 ID만 빌려 읽으면 같은 요청에서 metadata()도 읽을 수 있다.
+        let service_id = request.get_ref().service_id;
 
-        let result = self.db
+        // 해당 서비스의 read 권한을 확인한다.
+        // 조회에서는 사용자 ID를 쓸 일이 없으므로 성고 여부만 확인한다.
+        self.require_configuration_access(
+            request.metadata(),
+            service_id,
+            ConfigurationAction::Read,
+        )
+        .await?;
+
+        let result = self
+            .db
             .read(ReadQuery::ServiceConfiguration(service_id))
             .await
             .map_err(|err| {
@@ -76,34 +123,17 @@ impl ServiceRegistry for RegistryHandler {
         &self,
         request: Request<UpdateServiceConfigurationRequest>,
     ) -> Result<Response<UpdateServiceConfigurationResponse>, Status> {
-        // authorization: Bearer <token>에서 실제 찾은 토큰 부분을 빌려 온다.
-        let token = request.metadata()
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| Status::unauthenticated("세션 토큰이 필요합니다."))?;
-
-        // get_ref()는 요청 본문을 빌린다. (빌리기 때문에 request는 계속 쓸 수 있다.)
         let service_id = request.get_ref().service_id;
-        if service_id <= 0 {
-            return Err(Status::invalid_argument("service_id는 양수여야 합니다."));
-        }
 
-        // None이면 유효한 세션 없음
-        // Some((사용자 ID, false))이면 로그인은 했지만 이 서비스의 수정 권한이 없다는 뜻이다.
-        let (user_id, can_write) = self.db
-            .configuration_write_access(token, service_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "세션 및 권한 조회 실패");
-                Status::internal("수정 권한을 확인할 수 없습니다.")
-            })?
-            .ok_or_else(|| Status::unauthenticated("유효한 세션이 아닙니다."))?;
-
-        if !can_write {
-            return Err(Status::permission_denied("이 서비스의 설정을 수정할 권한이 없습니다."));
-        }
+        // 수정에는 같은 서비스의 write 권한이 필요하다.
+        // 반환된 user_id는 아래 DB 저장 호출에서 changed_by로 사용한다.
+        let user_id = self.
+            require_configuration_access(
+                request.metadata(),
+                service_id,
+                ConfigurationAction::Write,
+            )
+            .await?;
 
         // 헤더를 다 사용했으므로 이제 본문을 소유한 값으로 꺼낸다.
         let input = request.into_inner();
@@ -115,21 +145,24 @@ impl ServiceRegistry for RegistryHandler {
             .ok_or_else(|| Status::invalid_argument("excepted_revision이 필요힙니다."))?;
 
         if excepted_revision < 0 {
-            return Err(Status::invalid_argument("except_revision은 0 이상이어야 합니다."));
+            return Err(Status::invalid_argument(
+                "except_revision은 0 이상이어야 합니다.",
+            ));
         }
 
         // proto의 oneof가 Rust에서는 Option<Change>로 생성된다.
         let configuration: Option<serde_json::Value> = match input.change {
             Some(Change::ConfigurationJson(json)) => {
-                let value = serde_json::from_str(&json)
-                    .map_err(|_| Status::invalid_argument("configuration_json의 JSON 형식이 잘못되었습니다."))?;
+                let value = serde_json::from_str(&json).map_err(|_| {
+                    Status::invalid_argument("configuration_json의 JSON 형식이 잘못되었습니다.")
+                })?;
                 Some(value) // JSON 문자열 "null"도 Some(Value::Null)이 된다.
             }
 
             Some(Change::ClearConfiguration(())) => None, // SQL NULL로 저장한다.
             None => {
                 return Err(Status::invalid_argument(
-                    "configuration_json 또는 clear_configuration을 지정하세요."
+                    "configuration_json 또는 clear_configuration을 지정하세요.",
                 ));
             }
         };
