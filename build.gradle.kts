@@ -97,6 +97,7 @@ hibernate {
 sourceSets {
     named("main") {
         proto {
+            // Java 빌드에서 .proto 파일을 읽는다.
             srcDir("contract/proto")
         }
     }

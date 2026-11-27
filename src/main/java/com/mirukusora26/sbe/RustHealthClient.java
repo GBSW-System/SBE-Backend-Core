@@ -17,6 +17,8 @@ public class RustHealthClient {
                 .build();
 
         try {
+            // 빈 요청의 service 이름은 ""이다.
+            // main.rs에서 reporter가 ""에 기록한 서버 전체 상태를 읽는다.
             var response = HealthGrpc.newBlockingStub(channel)
                     .withDeadlineAfter(3, TimeUnit.SECONDS)
                     .check(HealthCheckRequest.getDefaultInstance());
