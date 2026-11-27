@@ -1,18 +1,10 @@
--- Apply once in one transaction (e.g. psql --single-transaction -v ON_ERROR_STOP=1).
--- The target must be a UTF-8 database on an ICU-enabled PostgreSQL build.
--- Timestamps represent instants. Korean school calendar dates use DATE.
 SET LOCAL TIME ZONE 'UTC';
-
--- Primary-strength ICU comparisons ignore case and accents. Opaque identifiers
--- with explicit binary comparison use the built-in C collation instead.
 CREATE COLLATION school_text (
     provider = icu,
     locale = 'und-u-ks-level1',
     deterministic = false
 );
 
--- Refresh updated_at only when a stored value changes.
--- JSONB record comparison also detects case-only changes in collated text.
 CREATE FUNCTION set_row_updated_at()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -54,6 +46,7 @@ CREATE TABLE services (
     status services_status_type NOT NULL DEFAULT 'INACTIVE',
     is_public BOOLEAN NOT NULL DEFAULT FALSE,
     configuration JSONB,
+    configuration_revision BIGINT NOT NULL DEFAULT 0 CHECK (configuration_revision >= 0),
     created_at TIMESTAMPTZ(6) NOT NULL DEFAULT statement_timestamp(),
     updated_at TIMESTAMPTZ(6) NOT NULL DEFAULT statement_timestamp()
 );
@@ -122,6 +115,19 @@ CREATE INDEX idx_users_type_status ON users (account_type, status);
 CREATE TRIGGER refresh_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION set_row_updated_at();
+
+CREATE TABLE service_configuration_versions (
+    service_id BIGINT NOT NULL REFERENCES services(id) ON DELETE RESTRICT,
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    configuration JSONB,
+    changed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    changed_at TIMESTAMPTZ(6) NOT NULL DEFAULT statement_timestamp(),
+    restored_from_revision BIGINT,
+    PRIMARY KEY (service_id, revision),
+    FOREIGN KEY (service_id, restored_from_revision)
+        REFERENCES service_configuration_versions(service_id, revision),
+    CHECK (restored_from_revision < revision)
+);
 
 CREATE TABLE user_private_profiles (
     user_id BIGINT PRIMARY KEY CHECK (user_id > 0),
