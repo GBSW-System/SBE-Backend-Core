@@ -1,4 +1,5 @@
 import com.google.protobuf.gradle.id
+import com.google.protobuf.gradle.proto
 
 plugins {
     java
@@ -90,6 +91,14 @@ dependencyManagement {
 
 hibernate {
     enhancement {
+    }
+}
+
+sourceSets {
+    named("main") {
+        proto {
+            srcDir("contract/proto")
+        }
     }
 }
 

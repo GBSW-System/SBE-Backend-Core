@@ -1,5 +1,12 @@
 mod database;
+mod registry_handler;
 
+mod registry {
+    tonic::include_proto!("sbe.registry.v1");
+}
+
+use registry::service_registry_server::ServiceRegistryServer;
+use registry_handler::RegistryHandler;
 use anyhow::Result;
 use database::Database;
 use std::{env, time::Duration};
@@ -18,6 +25,7 @@ async fn main() -> Result<()> {
 
     reporter.set_service_status("", ServingStatus::NotServing).await;
 
+    let registry_service = ServiceRegistryServer::new(RegistryHandler::new(db.clone()));
     let monitor = tokio::spawn(async move {
         loop {
             let status = if db.is_ready().await {
@@ -34,6 +42,7 @@ async fn main() -> Result<()> {
     println!("Rust gPRC: {addr}");
     let result = Server::builder()
         .add_service(health_service)
+        .add_service(registry_service)
         .serve_with_shutdown(addr, async {
             let _ = tokio::signal::ctrl_c().await;
         })

@@ -10,6 +10,7 @@ impl Database {
             .connect(url)
             .await?;
 
+        sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool } )
     }
 }
