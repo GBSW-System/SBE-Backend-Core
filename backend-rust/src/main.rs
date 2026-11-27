@@ -21,8 +21,7 @@ use tonic_health::{server::health_reporter, ServingStatus};
 async fn main() -> Result<()> {
     // 로컬 .env를 읽는다.
     dotenvy::dotenv().ok();
-    
-    
+
     let gateway_auth = GatewayAuth::new(
         env::var("SBE_GATEWAY_TOKEN")
             .ok()      // 값을 읽을 수 없으면 None

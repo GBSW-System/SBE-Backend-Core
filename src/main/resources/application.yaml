@@ -11,6 +11,8 @@ spring:
       audio:
         speech: none
         transcription: none
+  webservices:
+    path: /soap
   datasource:
     url: jdbc:postgresql://localhost:5432/sbe
     username: postgres
