@@ -3,6 +3,7 @@ package com.mirukusora26.sbe;
 
 import com.mirukusora26.sbe.grpc.registry.v1.GetServiceConfigurationRequest;
 import com.mirukusora26.sbe.grpc.registry.v1.GetServiceConfigurationResponse;
+import com.mirukusora26.sbe.grpc.registry.v1.UpdateServiceConfigurationRequest;
 import com.mirukusora26.sbe.grpc.registry.v1.ServiceRegistryGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -46,33 +47,44 @@ public class ServiceConfigurationClient {
                 .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers));
     }
 
-    public GetServiceConfigurationResponse getConfiguration(
-            long serviceId, String authorization
-    ) {
-        // 컴트롤러에서 HTTP Authorization 헤더 전체를 전달 받는다.
-        // ex. "Bearer abc123". "Bearer " 다음에는 실제 토큰이 있어야한다.
-        if (authorization == null || !authorization.startsWith("Bearer ") ||
-                authorization.length() == 7 ||
-                !authorization.substring(7).chars().allMatch(c -> c >= '!' && c <= '~')) {
+    // 공용 스텁에는 게이트웨이 토큰이 이미 있다.
+    private ServiceRegistryGrpc.ServiceRegistryBlockingStub userStub(String authorization) {
+        if (authorization == null || !authorization.startsWith("Bearer ")
+                || authorization.length() == 7
+                || !authorization.substring(7).chars().allMatch(c -> c >= '!' && c <= '~')) {
             throw Status.UNAUTHENTICATED
                     .withDescription("세션 토큰이 필요합니다.")
                     .asRuntimeException();
         }
 
-        // 사용자 세션은 호출마다 다르므로 메서드 안에서 새로 만든다.
-        // authorization에 이미 "Bearer "가 있으므로 그대로 넣는다.
-        var userHeaders = new Metadata();
-        userHeaders.put(AUTHORIZATION, authorization);
+        var headers = new Metadata();
+        headers.put(AUTHORIZATION, authorization);
 
-        var req = GetServiceConfigurationRequest.newBuilder()
+        return registry
+                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
+                .withDeadlineAfter(3, TimeUnit.SECONDS);
+    }
+
+    // 기존 GET 컨트롤러가 호출하는 메서드. 호출 방식은 그대로다.
+    public GetServiceConfigurationResponse getConfiguration(long serviceId, String authorization) {
+        var request = GetServiceConfigurationRequest.newBuilder()
                 .setServiceId(serviceId)
                 .build();
 
-        // withInterceptors()는 이 호출에 쓸 새 스텁을 반환한다.
-        // 사용자 헤더와 3초 제한은 이번 조회에만 적용된다.
-        return registry
-                .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(userHeaders))
-                .withDeadlineAfter(3, TimeUnit.SECONDS)
-                .getServiceConfiguration(req);
+        return userStub(authorization).getServiceConfiguration(request);
+    }
+
+    // PUT 컨트롤러가 호출할 메서드. 저장에 성공하면 새 리비전을 반환한다.
+    public long updateConfiguration(long serviceId, long expectedRevision,
+                                    String configurationJson, String authorization) {
+        var request = UpdateServiceConfigurationRequest.newBuilder()
+                .setServiceId(serviceId)
+                .setExpectedRevision(expectedRevision)
+                .setConfigurationJson(configurationJson)
+                .build();
+
+        return userStub(authorization)
+                .updateServiceConfiguration(request)
+                .getConfigurationRevision();
     }
 }

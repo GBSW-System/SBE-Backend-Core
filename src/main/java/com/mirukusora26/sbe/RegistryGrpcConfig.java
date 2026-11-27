@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-// Rust 서버에 연결할 gPRC 채넣을 Spring이 관리한다.
+// Rust 서버에 연결할 gPRC 채널을 Spring이 관리한다.
 @Configuration
 public class RegistryGrpcConfig {
 

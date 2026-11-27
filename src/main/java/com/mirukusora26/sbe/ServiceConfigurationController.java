@@ -4,10 +4,14 @@ import io.grpc.StatusRuntimeException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -44,28 +48,73 @@ public class ServiceConfigurationController {
                 // HTTP 응답에서 {"enabled": true}가 되어 실제 JSON 객체로 전달된다.
                 body.set("configuration", json.readTree(result.getConfigurationJson()));
             }
-            
-            return ResponseEntity.ok(body);
-        } catch (StatusRuntimeException e) {
-            // Rust 내부의 gRPC 상태를 외부 HTTP 상태로 변환한다.
-            var status = switch (e.getStatus().getCode()) {
-                case UNAUTHENTICATED -> HttpStatus.UNAUTHORIZED; // 401
-                case PERMISSION_DENIED -> HttpStatus.FORBIDDEN; // 403
-                case INVALID_ARGUMENT -> HttpStatus.BAD_REQUEST; // 400
-                case NOT_FOUND -> HttpStatus.NOT_FOUND; // 404
-                case UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE; // 503
-                case DEADLINE_EXCEEDED -> HttpStatus.GATEWAY_TIMEOUT; // 504
-                default -> HttpStatus.BAD_GATEWAY; // 502
-            };
 
-            var response = ResponseEntity.status(status);
-            if (status == HttpStatus.UNAUTHORIZED) {
-                response.header(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
-            }
-            return response.build();
+            return ResponseEntity.ok(body);
         } catch (JacksonException e) {
             // Rust에서 받은 설정 문자열을 JSON으로 해석할 수 없는 경우
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
         }
+    }
+
+    @ExceptionHandler(StatusRuntimeException.class)
+    public ResponseEntity<Void> handleGrpcError(StatusRuntimeException e) {
+        var status = switch (e.getStatus().getCode()) {
+            case UNAUTHENTICATED -> HttpStatus.UNAUTHORIZED;
+            case PERMISSION_DENIED -> HttpStatus.FORBIDDEN;
+            case INVALID_ARGUMENT -> HttpStatus.BAD_REQUEST;
+            case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case ABORTED -> HttpStatus.CONFLICT;  // 이미 다른 요청이 리비전을 변경했다.
+            case UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
+            case DEADLINE_EXCEEDED -> HttpStatus.GATEWAY_TIMEOUT;
+            default -> HttpStatus.BAD_GATEWAY;
+        };
+
+        var res = ResponseEntity.status(status);
+        if (status == HttpStatus.UNAUTHORIZED) {
+            res.header(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
+        }
+
+        return res.build();
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Void> handleUnreadableBody() {
+        return ResponseEntity.badRequest().build();
+    }
+
+    @PutMapping(value = "/services/{id}/configuration", consumes = "application/json")
+    public ResponseEntity<ObjectNode> updateConfiguration(
+            @PathVariable("id") long serviceId,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false)
+            String authorization,
+            @RequestBody ObjectNode body) {
+
+        // 클라이언트가 마지막으로 읽은 리비전으로, 최조 리비전인 0도 유효하다.
+        var revision = body.get("expectedRevision");
+        if (revision == null || !revision.isIntegralNumber() ||
+                !revision.canConvertToLong() || revision.longValue() < 0) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // 빌드가 빠지만 Java null이다.
+        // 명시적으로 보낸 {"configuration": null}은 JSON 값이므로 저장할 수 있다.
+        var configuration = body.get("configuration");
+        if (configuration == null) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // gRPC는 설정을 JSON 문자열로 받는다.
+        // toString()은 객체, 배열, 문자열, null을 각각 올바른 JSON으로 직렬화한다.
+        long savedRevision = client.updateConfiguration(
+                serviceId,
+                revision.longValue(),
+                configuration.toString(),
+                authorization
+        );
+
+        // PostgreSQL에 실제로 저장된 새 리비전을 돌려준다.
+        var response = json.createObjectNode();
+        response.put("configurationRevision", savedRevision);
+        return ResponseEntity.ok(response);
     }
 }
