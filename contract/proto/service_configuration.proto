@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+// gPRC 서비스의 정식 이름은 sbe.registry.v1.ServiceRegistry이다.
+// 통신 규격의 버전은 v1이다.
 package sbe.registry.v1;
 
 import "google/protobuf/empty.proto";
@@ -8,32 +10,48 @@ option java_package = "com.mirukusora26.sbe.grpc.registry.v1";
 option java_multiple_files = true;
 
 service ServiceRegistry {
+  // 서비스 하나의 현재 설정과 리비전을 조회한다.
   rpc GetServiceConfiguration(GetServiceConfigurationRequest)
       returns (GetServiceConfigurationResponse);
 
+  // 호출자가 읽었던 리비전을 기준으로 설정을 저장하거나 지운다.
   rpc UpdateServiceConfiguration(UpdateServiceConfigurationRequest)
       returns (UpdateServiceConfigurationResponse);
 }
 
 message GetServiceConfigurationRequest {
+  // 필드 식별 번호는 1이다.
   int64 service_id = 1;
 }
 
 message GetServiceConfigurationResponse {
+  // DB의 configuration이 SQL NULL이면 이 필드를 생략한다.
+  // Java는 hasConfigurationJson()으로 필드의 존재 여부를 확인한다.
   optional string configuration_json = 1;
+
+  // 서비스를 성공적으로 수정할 때마다 증가하는 번호
   int64 configuration_revision = 2;
 }
 
 message UpdateServiceConfigurationRequest {
   int64 service_id = 1;
+
+  // Java가 마지막 조회 응답에서 받은 리비전.
+  // Rust에서는 Option<i64>가 되므로, Some(0)과 None을 구별할 수 있다.
   optional int64 expected_revision = 2;
 
+  // 한 요청에서 아래 두 동작 중 하나를 선택한다.
+  // 둘 다 선택하지 않은 요청은 Rust 핸들러가 거절한다.
   oneof change {
+    // ex. {"enabled": true} JSON 문자열을 보낸다.
     string configuration_json = 3;
+
+    // 설정 컬럼을 SQL NULL로 바꾼다. (서비스 행 자체는 유지한다.)
     google.protobuf.Empty clear_configuration = 4;
   }
 }
 
 message UpdateServiceConfigurationResponse {
+  // DB가 실제 저장을 마친 뒤 반환한 새 리비전.
   int64 configuration_revision = 1;
 }
