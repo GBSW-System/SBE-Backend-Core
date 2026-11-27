@@ -8,6 +8,7 @@ use tonic_health::{server::health_reporter, ServingStatus};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     let db = Database::connect(&env::var("DATABASE_URL")?).await?;
     let addr = env::var("GPRC_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:50051".into())
