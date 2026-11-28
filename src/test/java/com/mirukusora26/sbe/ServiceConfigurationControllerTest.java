@@ -15,6 +15,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import io.grpc.Status;
+
 @WebMvcTest(ServiceConfigurationController.class)
 @Import(WebSecurityConfig.class)
 public class ServiceConfigurationControllerTest {
@@ -60,5 +62,21 @@ public class ServiceConfigurationControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configurationRevision").value(1))
                 .andExpect(jsonPath("$.configuration").doesNotExist());
+    }
+
+    @Test
+    void staleRevisionReturns409() throws Exception {
+        // 다른 관리자가 먼저 저장해서 Rust가 리비전 3의 수정을 거절한 상황이다.
+        when(client.updateConfiguration(7L, 3L, "{\"enabled\":true}", AUTH))
+                .thenThrow(Status.ABORTED.asRuntimeException());
+
+        // 사용자가 마지막으로 읽었던 리비전 3을 그대로 보낸다.
+        mvc.perform(put(URL)
+                        .header(HttpHeaders.AUTHORIZATION, AUTH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                            {"expectedRevision":3,"configuration":{"enabled":true}}
+                            """))
+                .andExpect(status().isConflict());
     }
 }
