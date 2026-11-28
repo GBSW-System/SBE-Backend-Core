@@ -1,4 +1,6 @@
 spring:
+  config:
+    import: "optional:file:./.env[.properties]"
   application:
     name: SBackEnd
   ai:
@@ -14,7 +16,12 @@ spring:
   webservices:
     path: /soap
   datasource:
-    url: jdbc:postgresql://localhost:5432/sbe
-    username: postgres
-    password: 1234
+    url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sbe}"
+    username: "${SPRING_DATASOURCE_USERNAME:postgres}"
+    password: "${SPRING_DATASOURCE_PASSWORD:1234}"
     driver-class-name: org.postgresql.Driver
+
+sbe:
+  grpc:
+    host: "${SBE_GRPC_HOST:127.0.0.1}"
+    port: "${SBE_GRPC_PORT:50051}"
