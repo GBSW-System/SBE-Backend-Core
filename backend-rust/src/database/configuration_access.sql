@@ -6,7 +6,7 @@ SELECT s.user_id, EXISTS (
                            AND up.assigned_at <= statement_timestamp()
                            AND (up.expires_at IS NULL OR up.expires_at > statement_timestamp())
     WHERE p.service_id = $2 AND p.is_active
-      AND p.code = ('service.' || p.service_id::text || '.configuration.write')
+      AND p.code = ('service.' || p.service_id::text || '.configuration.' || $3::text)
       AND COALESCE(up.effect = 'ALLOW', EXISTS (
         SELECT 1
         FROM user_roles ur
@@ -16,7 +16,7 @@ SELECT s.user_id, EXISTS (
           AND ur.assigned_at <= statement_timestamp()
           AND (ur.expires_at IS NULL OR ur.expires_at > statement_timestamp())
     ))
-) AS can_write
+) AS allowed
 FROM user_sessions s
          JOIN users u ON u.id = s.user_id AND u.status = 'ACTIVE'
 WHERE s.token_hash = $1

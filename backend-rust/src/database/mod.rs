@@ -16,6 +16,12 @@ pub enum ReadMode {
     Parallel,
 }
 
+// 핸들러가 검사할 수 있는 서비스 설정 권한을 두 가지로 제한한다.
+pub(crate) enum ConfigurationAction {
+    Read,
+    Write,
+}
+
 // 어떤 조회를 할 지와 필요한 인자를 하나의 값으로 묶는다.
 pub enum ReadQuery {
     ServiceName(String),       // 서비스 code로 이름 조회
@@ -172,21 +178,29 @@ impl Database {
         }
     }
 
-    pub async fn configuration_write_access(
+    // action에 따라 설정 조회(Read) 또는 수정(Write) 권한을 검사한다.
+    pub(crate) async fn configuration_access(
         &self,
         token: &str,
         service_id: i64,
+        action: ConfigurationAction,
     ) -> Result<Option<(i64, bool)>, sqlx::Error> {
         use sha2::{Digest, Sha256};
 
         // user_session.token_hash에는 원본 토큰의 SHA-256 결과 32바이트가 들어 있다.
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
 
+        let action_name = match action {
+            ConfigurationAction::Read => "read",
+            ConfigurationAction::Write => "write"
+        };
+
         // include_str()는 빌드할 때 SQL 파일의 내용을 문자열로 포함한다.
         // 결과 튜플의 첫 값은 사용자 ID, 두 번째 값은 쓰기 허용 여부다.
-        sqlx::query_as::<_, (i64, bool)>(include_str!("configuration_write_access.sql"))
+        sqlx::query_as::<_, (i64, bool)>(include_str!("configuration_access.sql"))
             .bind(token_hash)
             .bind(service_id)
+            .bind(action_name)
             .fetch_optional(&self.pool)
             .await
     }
